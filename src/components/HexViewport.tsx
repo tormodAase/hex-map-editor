@@ -506,6 +506,20 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
         return { x, y }
       }
 
+      const isPointerOverUi = (screenX: number, screenY: number): boolean => {
+        const element = document.elementFromPoint(screenX, screenY)
+        if (!element) {
+          return false
+        }
+
+        return Boolean(
+          element.closest('.terrain-palette') ||
+          element.closest('.location-palette') ||
+          element.closest('.file-controls') ||
+          element.closest('.zoom-indicator'),
+        )
+      }
+
       const highlightHoveredHex = (screenX: number, screenY: number) => {
         const local = screenToCanvas(screenX, screenY)
 
@@ -688,7 +702,17 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
       const onPointerMove = (event: PointerEvent) => {
         highlightHoveredHex(event.clientX, event.clientY)
 
+        // Safety: if we somehow miss pointerup, stop the stroke once left button is not pressed.
+        if (isPaintingStroke && (event.buttons & 1) === 0) {
+          isPaintingStroke = false
+          endAction()
+        }
+
         if (isPaintingStroke && activeToolRef.current !== 'move') {
+          if (isPointerOverUi(event.clientX, event.clientY)) {
+            return
+          }
+
           if (activeToolRef.current === 'river' || activeToolRef.current === 'erase-river') {
             paintEdgeAtScreen(event.clientX, event.clientY)
           } else {
@@ -697,6 +721,10 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
         }
 
         if (isPanning) {
+          if (isPointerOverUi(event.clientX, event.clientY)) {
+            return
+          }
+
           world.position.x += event.clientX - lastX
           world.position.y += event.clientY - lastY
           needsRedrawRef.current = true
