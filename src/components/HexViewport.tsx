@@ -1,8 +1,19 @@
 import { useEffect, useRef } from 'react'
 import { Application, Container, Graphics } from 'pixi.js'
 
+type TerrainDefinition = {
+  id: string
+  label: string
+  fillColor: number
+  edgeColor: number
+  cssColor: string
+}
+
 type HexViewportProps = {
   onZoomChange?: (zoom: number) => void
+  selectedTerrainId: string
+  terrainDefinitions: TerrainDefinition[]
+  activeTool: 'move' | 'paint' | 'erase'
 }
 
 const SQRT3 = Math.sqrt(3)
@@ -10,7 +21,6 @@ const HEX_SIZE = 36
 const MIN_ZOOM = 0.05
 const MAX_ZOOM = 3
 const ZOOM_SENSITIVITY = 0.005
-const REDRAW_EPSILON = 0.0001
 
 type Axial = {
   q: number
@@ -134,8 +144,27 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
 }
 
-export function HexViewport({ onZoomChange }: HexViewportProps) {
+function makeCellKey(q: number, r: number): string {
+  return `${q},${r}`
+}
+
+export function HexViewport({
+  onZoomChange,
+  selectedTerrainId,
+  terrainDefinitions,
+  activeTool,
+}: HexViewportProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
+  const selectedTerrainRef = useRef(selectedTerrainId)
+  const activeToolRef = useRef(activeTool)
+
+  useEffect(() => {
+    selectedTerrainRef.current = selectedTerrainId
+  }, [selectedTerrainId])
+
+  useEffect(() => {
+    activeToolRef.current = activeTool
+  }, [activeTool])
 
   useEffect(() => {
     let destroyed = false
@@ -164,29 +193,28 @@ export function HexViewport({ onZoomChange }: HexViewportProps) {
       const world = new Container()
       app.stage.addChild(world)
 
+      const terrainLayer = new Graphics()
       const grid = new Graphics()
       const hover = new Graphics()
       grid.setStrokeStyle({ width: 1.5, color: 0x2f445f, alpha: 0.95 })
+      const terrainById = new Map(terrainDefinitions.map((terrain) => [terrain.id, terrain]))
+      const terrainTiles = new Map<string, string>()
 
+      world.addChild(terrainLayer)
       world.addChild(grid)
       world.addChild(hover)
 
       world.position.set(app.renderer.width / 2, app.renderer.height / 2)
 
-      let isDragging = false
+      let isPanning = false
+      let isPaintingStroke = false
       let lastX = 0
       let lastY = 0
       let currentZoom = 1
       let needsRedraw = true
-      let lastRedrawState = {
-        x: world.position.x,
-        y: world.position.y,
-        zoom: currentZoom,
-        width: app.renderer.width,
-        height: app.renderer.height,
-      }
 
       const redrawVisibleGrid = () => {
+        terrainLayer.clear()
         grid.clear()
         grid.setStrokeStyle({ width: 1.5, color: 0x2f445f, alpha: 0.95 })
 
@@ -201,6 +229,23 @@ export function HexViewport({ onZoomChange }: HexViewportProps) {
         for (let r = bounds.minR; r <= bounds.maxR; r += 1) {
           for (let q = bounds.minQ; q <= bounds.maxQ; q += 1) {
             const center = hexToPixel(q, r, HEX_SIZE)
+
+            const terrainId = terrainTiles.get(makeCellKey(q, r))
+            if (terrainId) {
+              const terrain = terrainById.get(terrainId)
+              if (terrain) {
+                terrainLayer.setFillStyle({ color: terrain.fillColor, alpha: 1 })
+                terrainLayer.setStrokeStyle({
+                  width: 1,
+                  color: terrain.edgeColor,
+                  alpha: 0.95,
+                })
+                drawHexTile(terrainLayer, center.x, center.y, HEX_SIZE)
+                terrainLayer.fill()
+                terrainLayer.stroke()
+              }
+            }
+
             drawHexTile(grid, center.x, center.y, HEX_SIZE)
           }
         }
@@ -213,47 +258,35 @@ export function HexViewport({ onZoomChange }: HexViewportProps) {
           return
         }
 
-        const hasCameraMoved =
-          Math.abs(lastRedrawState.x - world.position.x) > REDRAW_EPSILON ||
-          Math.abs(lastRedrawState.y - world.position.y) > REDRAW_EPSILON ||
-          Math.abs(lastRedrawState.zoom - currentZoom) > REDRAW_EPSILON
-
-        const hasViewportChanged =
-          lastRedrawState.width !== app.renderer.width ||
-          lastRedrawState.height !== app.renderer.height
-
-        if (!hasCameraMoved && !hasViewportChanged) {
-          return
-        }
-
         redrawVisibleGrid()
-        lastRedrawState = {
-          x: world.position.x,
-          y: world.position.y,
-          zoom: currentZoom,
-          width: app.renderer.width,
-          height: app.renderer.height,
-        }
         needsRedraw = false
       }
 
-      const highlightHoveredHex = (screenX: number, screenY: number) => {
+      const screenToCanvas = (
+        screenX: number,
+        screenY: number,
+      ): { x: number; y: number } | null => {
         const rect = app.canvas.getBoundingClientRect()
-        const localX = screenX - rect.left
-        const localY = screenY - rect.top
+        const x = screenX - rect.left
+        const y = screenY - rect.top
 
-        if (
-          localX < 0 ||
-          localY < 0 ||
-          localX > app.renderer.width ||
-          localY > app.renderer.height
-        ) {
+        if (x < 0 || y < 0 || x > app.renderer.width || y > app.renderer.height) {
+          return null
+        }
+
+        return { x, y }
+      }
+
+      const highlightHoveredHex = (screenX: number, screenY: number) => {
+        const local = screenToCanvas(screenX, screenY)
+
+        if (!local) {
           hover.clear()
           return
         }
 
-        const worldX = (localX - world.position.x) / currentZoom
-        const worldY = (localY - world.position.y) / currentZoom
+        const worldX = (local.x - world.position.x) / currentZoom
+        const worldY = (local.y - world.position.y) / currentZoom
         const fractional = pixelToAxial(worldX, worldY, HEX_SIZE)
         const cell = roundAxial(fractional)
         const center = hexToPixel(cell.q, cell.r, HEX_SIZE)
@@ -262,6 +295,27 @@ export function HexViewport({ onZoomChange }: HexViewportProps) {
         hover.setStrokeStyle({ width: 2.5, color: 0x77d5ff, alpha: 0.95 })
         drawHexTile(hover, center.x, center.y, HEX_SIZE)
         hover.stroke()
+      }
+
+      const paintCellAtScreen = (screenX: number, screenY: number) => {
+        const local = screenToCanvas(screenX, screenY)
+        if (!local) {
+          return
+        }
+
+        const worldX = (local.x - world.position.x) / currentZoom
+        const worldY = (local.y - world.position.y) / currentZoom
+        const fractional = pixelToAxial(worldX, worldY, HEX_SIZE)
+        const cell = roundAxial(fractional)
+        const key = makeCellKey(cell.q, cell.r)
+
+        if (activeToolRef.current === 'erase') {
+          terrainTiles.delete(key)
+        } else {
+          terrainTiles.set(key, selectedTerrainRef.current)
+        }
+
+        needsRedraw = true
       }
 
       redrawVisibleGrid()
@@ -280,47 +334,68 @@ export function HexViewport({ onZoomChange }: HexViewportProps) {
       }
 
       const onPointerDown = (event: PointerEvent) => {
-        if (event.button !== 0) {
+        if (event.button === 0) {
+          if (activeToolRef.current === 'move') {
+            isPanning = true
+            lastX = event.clientX
+            lastY = event.clientY
+          } else {
+            isPaintingStroke = true
+            paintCellAtScreen(event.clientX, event.clientY)
+            highlightHoveredHex(event.clientX, event.clientY)
+          }
           return
         }
 
-        isDragging = true
-        lastX = event.clientX
-        lastY = event.clientY
+        if (event.button === 1 || event.button === 2) {
+          isPanning = true
+          lastX = event.clientX
+          lastY = event.clientY
+        }
       }
 
       const onPointerMove = (event: PointerEvent) => {
         highlightHoveredHex(event.clientX, event.clientY)
 
-        if (!isDragging) {
-          return
+        if (isPaintingStroke && activeToolRef.current !== 'move') {
+          paintCellAtScreen(event.clientX, event.clientY)
         }
 
-        world.position.x += event.clientX - lastX
-        world.position.y += event.clientY - lastY
-        needsRedraw = true
+        if (isPanning) {
+          world.position.x += event.clientX - lastX
+          world.position.y += event.clientY - lastY
+          needsRedraw = true
 
-        lastX = event.clientX
-        lastY = event.clientY
+          lastX = event.clientX
+          lastY = event.clientY
+        }
       }
 
-      const onPointerUp = () => {
-        isDragging = false
+      const onPointerUp = (event: PointerEvent) => {
+        if (event.button === 0) {
+          isPaintingStroke = false
+          isPanning = false
+        }
+
+        if (event.button === 1 || event.button === 2) {
+          isPanning = false
+        }
+      }
+
+      const onPointerCancel = () => {
+        isPaintingStroke = false
+        isPanning = false
+      }
+
+      const onContextMenu = (event: MouseEvent) => {
+        event.preventDefault()
       }
 
       const onWheel = (event: WheelEvent) => {
         event.preventDefault()
 
-        const rect = app.canvas.getBoundingClientRect()
-        const localX = event.clientX - rect.left
-        const localY = event.clientY - rect.top
-
-        if (
-          localX < 0 ||
-          localY < 0 ||
-          localX > app.renderer.width ||
-          localY > app.renderer.height
-        ) {
+        const local = screenToCanvas(event.clientX, event.clientY)
+        if (!local) {
           return
         }
 
@@ -342,14 +417,15 @@ export function HexViewport({ onZoomChange }: HexViewportProps) {
           return
         }
 
-        updateZoomAtPoint(localX, localY, nextZoom)
+        updateZoomAtPoint(local.x, local.y, nextZoom)
       }
 
       app.canvas.addEventListener('pointerdown', onPointerDown)
+      app.canvas.addEventListener('contextmenu', onContextMenu)
       app.canvas.addEventListener('wheel', onWheel, { passive: false })
       window.addEventListener('pointermove', onPointerMove)
       window.addEventListener('pointerup', onPointerUp)
-      window.addEventListener('pointercancel', onPointerUp)
+      window.addEventListener('pointercancel', onPointerCancel)
       app.stage.eventMode = 'static'
       app.ticker.add(maybeRedrawGrid)
 
@@ -360,16 +436,18 @@ export function HexViewport({ onZoomChange }: HexViewportProps) {
 
         const rect = hostRef.current.getBoundingClientRect()
         app.renderer.resize(rect.width, rect.height)
+        needsRedraw = true
       }
 
       window.addEventListener('resize', onResize)
 
       return () => {
         app.canvas.removeEventListener('pointerdown', onPointerDown)
+        app.canvas.removeEventListener('contextmenu', onContextMenu)
         app.canvas.removeEventListener('wheel', onWheel)
         window.removeEventListener('pointermove', onPointerMove)
         window.removeEventListener('pointerup', onPointerUp)
-        window.removeEventListener('pointercancel', onPointerUp)
+        window.removeEventListener('pointercancel', onPointerCancel)
         window.removeEventListener('resize', onResize)
         app.ticker.remove(maybeRedrawGrid)
         app.destroy(true)
@@ -388,7 +466,7 @@ export function HexViewport({ onZoomChange }: HexViewportProps) {
         teardown()
       }
     }
-  }, [onZoomChange])
+  }, [onZoomChange, terrainDefinitions])
 
   return <div className="viewport" ref={hostRef} />
 }
