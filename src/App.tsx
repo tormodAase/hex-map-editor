@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { HexViewport } from './components/HexViewport'
+import { loadMapFromStorage, saveMapToStorage, exportMapToFile, importMapFromFile, serializeMap } from './utils/mapStorage'
 import './App.css'
 
 type TerrainDefinition = {
@@ -92,6 +93,54 @@ function App() {
   const [selectedTerrainId, setSelectedTerrainId] = useState(TERRAIN_TYPES[0].id)
   const [selectedLocationId, setSelectedLocationId] = useState(LOCATION_TYPES[0].id)
   const [activeTool, setActiveTool] = useState<ToolMode>('paint')
+  
+  // Initialize from localStorage
+  const initializeMapData = () => {
+    const stored = loadMapFromStorage()
+    if (stored) {
+      return {
+        terrainTiles: new Map(Object.entries(stored.terrainTiles)),
+        locationTiles: new Map(Object.entries(stored.locationTiles)),
+        riverEdges: new Set(stored.riverEdges),
+      }
+    }
+    return {
+      terrainTiles: new Map<string, string>(),
+      locationTiles: new Map<string, string>(),
+      riverEdges: new Set<string>(),
+    }
+  }
+  
+  const [terrainTiles, setTerrainTiles] = useState<Map<string, string>>(() => initializeMapData().terrainTiles)
+  const [locationTiles, setLocationTiles] = useState<Map<string, string>>(() => initializeMapData().locationTiles)
+  const [riverEdges, setRiverEdges] = useState<Set<string>>(() => initializeMapData().riverEdges)
+
+  // Save map to storage whenever it changes
+  useEffect(() => {
+    const mapData = serializeMap(terrainTiles, locationTiles, riverEdges)
+    saveMapToStorage(mapData)
+  }, [terrainTiles, locationTiles, riverEdges])
+
+  const handleExport = () => {
+    const mapData = serializeMap(terrainTiles, locationTiles, riverEdges)
+    const timestamp = new Date().toISOString().split('T')[0]
+    exportMapToFile(mapData, `hex-map-${timestamp}.json`)
+  }
+
+  const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      const mapData = await importMapFromFile(file)
+      setTerrainTiles(new Map(Object.entries(mapData.terrainTiles)))
+      setLocationTiles(new Map(Object.entries(mapData.locationTiles)))
+      setRiverEdges(new Set(mapData.riverEdges))
+      event.target.value = ''
+    } catch (error) {
+      console.error('Failed to import map:', error)
+      alert('Failed to import map. Please check the file format.')
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -102,6 +151,12 @@ function App() {
         locationDefinitions={LOCATION_TYPES}
         selectedLocationId={selectedLocationId}
         activeTool={activeTool}
+        terrainTiles={terrainTiles}
+        setTerrainTiles={setTerrainTiles}
+        locationTiles={locationTiles}
+        setLocationTiles={setLocationTiles}
+        riverEdges={riverEdges}
+        setRiverEdges={setRiverEdges}
       />
 
       <section className="terrain-palette" aria-label="Terrain palette">
@@ -207,6 +262,26 @@ function App() {
             </button>
           )
         })}
+      </section>
+
+      <section className="file-controls" aria-label="File controls">
+        <button
+          className="export-button"
+          type="button"
+          onClick={handleExport}
+          title="Download map as JSON"
+        >
+          ↓ Export
+        </button>
+        <label className="import-button" title="Load map from JSON file">
+          ↑ Import
+          <input
+            type="file"
+            accept=".json"
+            onChange={handleImport}
+            style={{ display: 'none' }}
+          />
+        </label>
       </section>
 
       <div className="zoom-indicator" role="status" aria-live="polite">

@@ -18,6 +18,12 @@ type HexViewportProps = {
   locationDefinitions: LocationDefinition[]
   selectedLocationId: string
   activeTool: 'move' | 'paint' | 'erase' | 'location' | 'erase-location' | 'river' | 'erase-river'
+  terrainTiles: Map<string, string>
+  setTerrainTiles: (tiles: Map<string, string>) => void
+  locationTiles: Map<string, string>
+  setLocationTiles: (tiles: Map<string, string>) => void
+  riverEdges: Set<string>
+  setRiverEdges: (edges: Set<string>) => void
 }
 
 const SQRT3 = Math.sqrt(3)
@@ -220,11 +226,21 @@ export function HexViewport({
   locationDefinitions,
   selectedLocationId,
   activeTool,
+  terrainTiles,
+  setTerrainTiles,
+  locationTiles,
+  setLocationTiles,
+  riverEdges,
+  setRiverEdges,
 }: HexViewportProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const selectedTerrainRef = useRef(selectedTerrainId)
   const selectedLocationRef = useRef(selectedLocationId)
   const activeToolRef = useRef(activeTool)
+  const localTerrainTilesRef = useRef<Map<string, string>>(new Map(terrainTiles))
+  const localLocationTilesRef = useRef<Map<string, string>>(new Map(locationTiles))
+  const localRiverEdgesRef = useRef<Set<string>>(new Set(riverEdges))
+  const needsRedrawRef = useRef(true)
 
   useEffect(() => {
     selectedTerrainRef.current = selectedTerrainId
@@ -237,6 +253,22 @@ export function HexViewport({
   useEffect(() => {
     activeToolRef.current = activeTool
   }, [activeTool])
+
+  // Sync prop changes to local refs
+  useEffect(() => {
+    localTerrainTilesRef.current = new Map(terrainTiles)
+    needsRedrawRef.current = true
+  }, [terrainTiles])
+
+  useEffect(() => {
+    localLocationTilesRef.current = new Map(locationTiles)
+    needsRedrawRef.current = true
+  }, [locationTiles])
+
+  useEffect(() => {
+    localRiverEdgesRef.current = new Set(riverEdges)
+    needsRedrawRef.current = true
+  }, [riverEdges])
 
   useEffect(() => {
     let destroyed = false
@@ -272,8 +304,6 @@ export function HexViewport({
       const hover = new Graphics()
       grid.setStrokeStyle({ width: 1.5, color: 0x2f445f, alpha: 0.95 })
       const terrainById = new Map(terrainDefinitions.map((terrain) => [terrain.id, terrain]))
-      const terrainTiles = new Map<string, string>()
-      const locationTiles = new Map<string, string>()
       const terrainIconById = new Map<string, Texture>()
       const locationIconById = new Map<string, Texture>()
 
@@ -289,7 +319,6 @@ export function HexViewport({
       ])
 
       const riverLayer = new Graphics()
-      const riverEdges = new Set<string>()
 
       world.addChild(terrainLayer)
       world.addChild(iconLayer)
@@ -305,7 +334,6 @@ export function HexViewport({
       let lastX = 0
       let lastY = 0
       let currentZoom = 1
-      let needsRedraw = true
 
       const redrawVisibleGrid = () => {
         terrainLayer.clear()
@@ -327,7 +355,7 @@ export function HexViewport({
             const center = hexToPixel(q, r, HEX_SIZE)
             const key = makeCellKey(q, r)
 
-            const terrainId = terrainTiles.get(key)
+            const terrainId = localTerrainTilesRef.current.get(key)
             if (terrainId) {
               const terrain = terrainById.get(terrainId)
               if (terrain) {
@@ -342,7 +370,7 @@ export function HexViewport({
                 terrainLayer.stroke()
 
                 const iconTexture = terrainIconById.get(terrainId)
-                if (iconTexture && !locationTiles.has(key)) {
+                if (iconTexture && !localLocationTilesRef.current.has(key)) {
                   const icon = new Sprite(iconTexture)
                   icon.anchor.set(0.5)
                   icon.position.set(Math.round(center.x), Math.round(center.y))
@@ -355,7 +383,7 @@ export function HexViewport({
               }
             }
 
-            const locationId = locationTiles.get(key)
+            const locationId = localLocationTilesRef.current.get(key)
             if (locationId) {
               const locTexture = locationIconById.get(locationId)
               if (locTexture) {
@@ -378,9 +406,9 @@ export function HexViewport({
 
         // Draw rivers over the grid lines
         riverLayer.clear()
-        if (riverEdges.size > 0) {
+        if (localRiverEdgesRef.current.size > 0) {
           riverLayer.setStrokeStyle({ width: 4, color: 0x2288ee, alpha: 0.92 })
-          for (const edgeKey of riverEdges) {
+          for (const edgeKey of localRiverEdgesRef.current) {
             const [part1, part2] = edgeKey.split('|')
             const [aq, ar] = part1.split(',').map(Number)
             const [bq, br] = part2.split(',').map(Number)
@@ -393,12 +421,12 @@ export function HexViewport({
       }
 
       const maybeRedrawGrid = () => {
-        if (!needsRedraw) {
+        if (!needsRedrawRef.current) {
           return
         }
 
         redrawVisibleGrid()
-        needsRedraw = false
+        needsRedrawRef.current = false
       }
 
       const screenToCanvas = (
@@ -454,11 +482,12 @@ export function HexViewport({
         const { a, b } = nearestEdge(worldX, worldY)
         const edgeKey = makeEdgeKey(a, b)
         if (activeToolRef.current === 'erase-river') {
-          riverEdges.delete(edgeKey)
+          localRiverEdgesRef.current.delete(edgeKey)
         } else {
-          riverEdges.add(edgeKey)
+          localRiverEdgesRef.current.add(edgeKey)
         }
-        needsRedraw = true
+        setRiverEdges(new Set(localRiverEdgesRef.current))
+        needsRedrawRef.current = true
       }
 
       const paintCellAtScreen = (screenX: number, screenY: number) => {
@@ -474,18 +503,20 @@ export function HexViewport({
         const key = makeCellKey(cell.q, cell.r)
 
         if (activeToolRef.current === 'erase') {
-          terrainTiles.delete(key)
-          locationTiles.delete(key)
+          localTerrainTilesRef.current.delete(key)
+          localLocationTilesRef.current.delete(key)
         } else if (activeToolRef.current === 'erase-location') {
-          locationTiles.delete(key)
+          localLocationTilesRef.current.delete(key)
         } else if (activeToolRef.current === 'location') {
-          if (!terrainTiles.has(key)) return
-          locationTiles.set(key, selectedLocationRef.current)
+          if (!localTerrainTilesRef.current.has(key)) return
+          localLocationTilesRef.current.set(key, selectedLocationRef.current)
         } else {
-          terrainTiles.set(key, selectedTerrainRef.current)
+          localTerrainTilesRef.current.set(key, selectedTerrainRef.current)
         }
-
-        needsRedraw = true
+        
+        setTerrainTiles(new Map(localTerrainTilesRef.current))
+        setLocationTiles(new Map(localLocationTilesRef.current))
+        needsRedrawRef.current = true
       }
 
       redrawVisibleGrid()
@@ -499,7 +530,7 @@ export function HexViewport({
         world.position.set(localX - beforeX * nextZoom, localY - beforeY * nextZoom)
 
         currentZoom = nextZoom
-        needsRedraw = true
+        needsRedrawRef.current = true
         onZoomChange?.(currentZoom)
       }
 
@@ -542,7 +573,7 @@ export function HexViewport({
         if (isPanning) {
           world.position.x += event.clientX - lastX
           world.position.y += event.clientY - lastY
-          needsRedraw = true
+          needsRedrawRef.current = true
 
           lastX = event.clientX
           lastY = event.clientY
@@ -614,7 +645,7 @@ export function HexViewport({
 
         const rect = hostRef.current.getBoundingClientRect()
         app.renderer.resize(rect.width, rect.height)
-        needsRedraw = true
+        needsRedrawRef.current = true
       }
 
       window.addEventListener('resize', onResize)
