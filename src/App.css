@@ -192,6 +192,8 @@
   backdrop-filter: blur(4px);
 }
 
+.undo-button,
+.redo-button,
 .print-button,
 .export-button,
 .import-button {
@@ -211,6 +213,8 @@
   justify-content: center;
 }
 
+.undo-button:hover,
+.redo-button:hover,
 .print-button:hover,
 .export-button:hover,
 .import-button:hover {
@@ -219,9 +223,18 @@
   box-shadow: 0 0 8px rgba(158, 208, 255, 0.3);
 }
 
+.undo-button:active,
+.redo-button:active,
 .print-button:active,
 .export-button:active,
 .import-button:active {
   background: rgba(40, 80, 130, 0.95);
   box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.4);
+}
+
+.undo-button:disabled,
+.redo-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
 }

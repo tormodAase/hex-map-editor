@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { HexViewport, type HexViewportHandle } from './components/HexViewport'
-import { loadMapFromStorage, saveMapToStorage, exportMapToFile, importMapFromFile, serializeMap } from './utils/mapStorage'
+import { loadMapFromStorage, saveMapToStorage, exportMapToFile, importMapFromFile, serializeMap, type MapData } from './utils/mapStorage'
 import './App.css'
 
 type TerrainDefinition = {
@@ -115,6 +115,8 @@ function App() {
   const [terrainTiles, setTerrainTiles] = useState<Map<string, string>>(() => initializeMapData().terrainTiles)
   const [locationTiles, setLocationTiles] = useState<Map<string, string>>(() => initializeMapData().locationTiles)
   const [riverEdges, setRiverEdges] = useState<Set<string>>(() => initializeMapData().riverEdges)
+  const [undoStack, setUndoStack] = useState<MapData[]>([])
+  const [redoStack, setRedoStack] = useState<MapData[]>([])
 
   // Save map to storage whenever it changes
   useEffect(() => {
@@ -132,16 +134,109 @@ function App() {
     const file = event.target.files?.[0]
     if (!file) return
     try {
+      const currentMap = serializeMap(terrainTiles, locationTiles, riverEdges)
       const mapData = await importMapFromFile(file)
       setTerrainTiles(new Map(Object.entries(mapData.terrainTiles)))
       setLocationTiles(new Map(Object.entries(mapData.locationTiles)))
       setRiverEdges(new Set(mapData.riverEdges))
+      setUndoStack((prev) => [...prev, currentMap])
+      setRedoStack([])
       event.target.value = ''
     } catch (error) {
       console.error('Failed to import map:', error)
       alert('Failed to import map. Please check the file format.')
     }
   }
+
+  const handleMapChange = (
+    nextTerrainTiles: Map<string, string>,
+    nextLocationTiles: Map<string, string>,
+    nextRiverEdges: Set<string>,
+  ) => {
+    setTerrainTiles(nextTerrainTiles)
+    setLocationTiles(nextLocationTiles)
+    setRiverEdges(nextRiverEdges)
+  }
+
+  const handleMapActionCommit = (
+    previousTerrainTiles: Map<string, string>,
+    previousLocationTiles: Map<string, string>,
+    previousRiverEdges: Set<string>,
+  ) => {
+    const previousMap = serializeMap(previousTerrainTiles, previousLocationTiles, previousRiverEdges)
+    setUndoStack((prev) => [...prev, previousMap])
+    setRedoStack([])
+  }
+
+  const handleUndo = () => {
+    if (undoStack.length === 0) return
+
+    const currentMap = serializeMap(terrainTiles, locationTiles, riverEdges)
+    const previousMap = undoStack[undoStack.length - 1]
+
+    setUndoStack((prev) => prev.slice(0, -1))
+    setRedoStack((prev) => [currentMap, ...prev])
+    setTerrainTiles(new Map(Object.entries(previousMap.terrainTiles)))
+    setLocationTiles(new Map(Object.entries(previousMap.locationTiles)))
+    setRiverEdges(new Set(previousMap.riverEdges))
+  }
+
+  const handleRedo = () => {
+    if (redoStack.length === 0) return
+
+    const currentMap = serializeMap(terrainTiles, locationTiles, riverEdges)
+    const nextMap = redoStack[0]
+
+    setRedoStack((prev) => prev.slice(1))
+    setUndoStack((prev) => [...prev, currentMap])
+    setTerrainTiles(new Map(Object.entries(nextMap.terrainTiles)))
+    setLocationTiles(new Map(Object.entries(nextMap.locationTiles)))
+    setRiverEdges(new Set(nextMap.riverEdges))
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const isEditable =
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.tagName === 'SELECT' ||
+        target?.isContentEditable
+
+      if (isEditable) {
+        return
+      }
+
+      const cmdOrCtrl = event.ctrlKey || event.metaKey
+      if (!cmdOrCtrl) {
+        return
+      }
+
+      const key = event.key.toLowerCase()
+
+      if (key === 'z' && event.shiftKey) {
+        event.preventDefault()
+        handleRedo()
+        return
+      }
+
+      if (key === 'z') {
+        event.preventDefault()
+        handleUndo()
+        return
+      }
+
+      if (key === 'y') {
+        event.preventDefault()
+        handleRedo()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [handleUndo, handleRedo])
 
   const handlePrintPng = () => {
     viewportRef.current?.downloadPng()
@@ -158,14 +253,14 @@ function App() {
         selectedLocationId={selectedLocationId}
         activeTool={activeTool}
         terrainTiles={terrainTiles}
-        setTerrainTiles={setTerrainTiles}
         locationTiles={locationTiles}
-        setLocationTiles={setLocationTiles}
         riverEdges={riverEdges}
-        setRiverEdges={setRiverEdges}
+        onMapChange={handleMapChange}
+        onMapActionCommit={handleMapActionCommit}
       />
 
       <section className="terrain-palette" aria-label="Terrain palette">
+        <div className="palette-heading">Base Tiles</div>
         <button
           className={`terrain-button move${activeTool === 'move' ? ' active' : ''}`}
           type="button"
@@ -271,6 +366,24 @@ function App() {
       </section>
 
       <section className="file-controls" aria-label="File controls">
+        <button
+          className="undo-button"
+          type="button"
+          onClick={handleUndo}
+          disabled={undoStack.length === 0}
+          title="Undo last change"
+        >
+          Undo
+        </button>
+        <button
+          className="redo-button"
+          type="button"
+          onClick={handleRedo}
+          disabled={redoStack.length === 0}
+          title="Redo last undone change"
+        >
+          Redo
+        </button>
         <button
           className="print-button"
           type="button"

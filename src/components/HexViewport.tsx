@@ -19,11 +19,18 @@ type HexViewportProps = {
   selectedLocationId: string
   activeTool: 'move' | 'paint' | 'erase' | 'location' | 'erase-location' | 'river' | 'erase-river'
   terrainTiles: Map<string, string>
-  setTerrainTiles: (tiles: Map<string, string>) => void
   locationTiles: Map<string, string>
-  setLocationTiles: (tiles: Map<string, string>) => void
   riverEdges: Set<string>
-  setRiverEdges: (edges: Set<string>) => void
+  onMapChange: (
+    terrainTiles: Map<string, string>,
+    locationTiles: Map<string, string>,
+    riverEdges: Set<string>,
+  ) => void
+  onMapActionCommit: (
+    previousTerrainTiles: Map<string, string>,
+    previousLocationTiles: Map<string, string>,
+    previousRiverEdges: Set<string>,
+  ) => void
 }
 
 export type HexViewportHandle = {
@@ -231,22 +238,27 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
   selectedLocationId,
   activeTool,
   terrainTiles,
-  setTerrainTiles,
   locationTiles,
-  setLocationTiles,
   riverEdges,
-  setRiverEdges,
+  onMapChange,
+  onMapActionCommit,
 }: HexViewportProps, ref) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const appRef = useRef<Application | null>(null)
   const selectedTerrainRef = useRef(selectedTerrainId)
   const selectedLocationRef = useRef(selectedLocationId)
   const activeToolRef = useRef(activeTool)
+  const onMapChangeRef = useRef(onMapChange)
+  const onMapActionCommitRef = useRef(onMapActionCommit)
   const hoverLayerRef = useRef<Graphics | null>(null)
   const localTerrainTilesRef = useRef<Map<string, string>>(new Map(terrainTiles))
   const localLocationTilesRef = useRef<Map<string, string>>(new Map(locationTiles))
   const localRiverEdgesRef = useRef<Set<string>>(new Set(riverEdges))
   const needsRedrawRef = useRef(true)
+  const actionStartTerrainRef = useRef<Map<string, string> | null>(null)
+  const actionStartLocationRef = useRef<Map<string, string> | null>(null)
+  const actionStartRiverRef = useRef<Set<string> | null>(null)
+  const actionDirtyRef = useRef(false)
 
   useImperativeHandle(ref, () => ({
     downloadPng: () => {
@@ -293,6 +305,14 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
   useEffect(() => {
     activeToolRef.current = activeTool
   }, [activeTool])
+
+  useEffect(() => {
+    onMapChangeRef.current = onMapChange
+  }, [onMapChange])
+
+  useEffect(() => {
+    onMapActionCommitRef.current = onMapActionCommit
+  }, [onMapActionCommit])
 
   // Sync prop changes to local refs
   useEffect(() => {
@@ -523,12 +543,26 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
         const worldY = (local.y - world.position.y) / currentZoom
         const { a, b } = nearestEdge(worldX, worldY)
         const edgeKey = makeEdgeKey(a, b)
+        let changed = false
         if (activeToolRef.current === 'erase-river') {
-          localRiverEdgesRef.current.delete(edgeKey)
+          changed = localRiverEdgesRef.current.delete(edgeKey)
         } else {
-          localRiverEdgesRef.current.add(edgeKey)
+          if (!localRiverEdgesRef.current.has(edgeKey)) {
+            localRiverEdgesRef.current.add(edgeKey)
+            changed = true
+          }
         }
-        setRiverEdges(new Set(localRiverEdgesRef.current))
+
+        if (!changed) {
+          return
+        }
+
+        actionDirtyRef.current = true
+        onMapChangeRef.current(
+          new Map(localTerrainTilesRef.current),
+          new Map(localLocationTilesRef.current),
+          new Set(localRiverEdgesRef.current),
+        )
         needsRedrawRef.current = true
       }
 
@@ -543,26 +577,74 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
         const fractional = pixelToAxial(worldX, worldY, HEX_SIZE)
         const cell = roundAxial(fractional)
         const key = makeCellKey(cell.q, cell.r)
+        let changed = false
 
         if (activeToolRef.current === 'erase') {
-          localTerrainTilesRef.current.delete(key)
-          localLocationTilesRef.current.delete(key)
+          const terrainChanged = localTerrainTilesRef.current.delete(key)
+          const locationChanged = localLocationTilesRef.current.delete(key)
+          changed = terrainChanged || locationChanged
         } else if (activeToolRef.current === 'erase-location') {
-          localLocationTilesRef.current.delete(key)
+          changed = localLocationTilesRef.current.delete(key)
         } else if (activeToolRef.current === 'location') {
           if (!localTerrainTilesRef.current.has(key)) return
-          localLocationTilesRef.current.set(key, selectedLocationRef.current)
+          const current = localLocationTilesRef.current.get(key)
+          if (current !== selectedLocationRef.current) {
+            localLocationTilesRef.current.set(key, selectedLocationRef.current)
+            changed = true
+          }
         } else {
-          localTerrainTilesRef.current.set(key, selectedTerrainRef.current)
+          const current = localTerrainTilesRef.current.get(key)
+          if (current !== selectedTerrainRef.current) {
+            localTerrainTilesRef.current.set(key, selectedTerrainRef.current)
+            changed = true
+          }
         }
-        
-        setTerrainTiles(new Map(localTerrainTilesRef.current))
-        setLocationTiles(new Map(localLocationTilesRef.current))
+
+        if (!changed) {
+          return
+        }
+
+        actionDirtyRef.current = true
+        onMapChangeRef.current(
+          new Map(localTerrainTilesRef.current),
+          new Map(localLocationTilesRef.current),
+          new Set(localRiverEdgesRef.current),
+        )
         needsRedrawRef.current = true
       }
 
       redrawVisibleGrid()
       onZoomChange?.(currentZoom)
+
+      const beginAction = () => {
+        if (actionStartTerrainRef.current) {
+          return
+        }
+
+        actionStartTerrainRef.current = new Map(localTerrainTilesRef.current)
+        actionStartLocationRef.current = new Map(localLocationTilesRef.current)
+        actionStartRiverRef.current = new Set(localRiverEdgesRef.current)
+        actionDirtyRef.current = false
+      }
+
+      const endAction = () => {
+        if (!actionStartTerrainRef.current || !actionStartLocationRef.current || !actionStartRiverRef.current) {
+          return
+        }
+
+        if (actionDirtyRef.current) {
+          onMapActionCommitRef.current(
+            actionStartTerrainRef.current,
+            actionStartLocationRef.current,
+            actionStartRiverRef.current,
+          )
+        }
+
+        actionStartTerrainRef.current = null
+        actionStartLocationRef.current = null
+        actionStartRiverRef.current = null
+        actionDirtyRef.current = false
+      }
 
       const updateZoomAtPoint = (localX: number, localY: number, nextZoom: number) => {
         const beforeX = (localX - world.position.x) / currentZoom
@@ -583,10 +665,12 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
             lastX = event.clientX
             lastY = event.clientY
           } else if (activeToolRef.current === 'river' || activeToolRef.current === 'erase-river') {
+            beginAction()
             isPaintingStroke = true
             paintEdgeAtScreen(event.clientX, event.clientY)
             highlightHoveredHex(event.clientX, event.clientY)
           } else {
+            beginAction()
             isPaintingStroke = true
             paintCellAtScreen(event.clientX, event.clientY)
             highlightHoveredHex(event.clientX, event.clientY)
@@ -626,6 +710,7 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
         if (event.button === 0) {
           isPaintingStroke = false
           isPanning = false
+          endAction()
         }
 
         if (event.button === 1 || event.button === 2) {
@@ -636,6 +721,7 @@ export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(funct
       const onPointerCancel = () => {
         isPaintingStroke = false
         isPanning = false
+        endAction()
       }
 
       const onContextMenu = (event: MouseEvent) => {
