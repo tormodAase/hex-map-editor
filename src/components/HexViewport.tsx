@@ -17,7 +17,7 @@ type HexViewportProps = {
   terrainDefinitions: TerrainDefinition[]
   locationDefinitions: LocationDefinition[]
   selectedLocationId: string
-  activeTool: 'move' | 'paint' | 'erase' | 'location' | 'erase-location'
+  activeTool: 'move' | 'paint' | 'erase' | 'location' | 'erase-location' | 'river' | 'erase-river'
 }
 
 const SQRT3 = Math.sqrt(3)
@@ -25,6 +25,17 @@ const HEX_SIZE = 36
 const MIN_ZOOM = 0.05
 const MAX_ZOOM = 3
 const ZOOM_SENSITIVITY = 0.005
+
+// Pointy-top neighbor directions in axial coords, in vertex order.
+// Direction i shares the edge between vertex[i] and vertex[(i+1)%6].
+const NEIGHBOR_DIRS: Axial[] = [
+  { q: 1, r: 0 },   // E  – edge v0→v1
+  { q: 0, r: 1 },   // SE – edge v1→v2
+  { q: -1, r: 1 },  // SW – edge v2→v3
+  { q: -1, r: 0 },  // W  – edge v3→v4
+  { q: 0, r: -1 },  // NW – edge v4→v5
+  { q: 1, r: -1 },  // NE – edge v5→v0
+]
 
 type Axial = {
   q: number
@@ -152,6 +163,56 @@ function makeCellKey(q: number, r: number): string {
   return `${q},${r}`
 }
 
+// Canonical edge key – smaller string first so (A,B) === (B,A).
+function makeEdgeKey(a: Axial, b: Axial): string {
+  const ka = `${a.q},${a.r}`
+  const kb = `${b.q},${b.r}`
+  return ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`
+}
+
+// Returns the two world-space vertex positions that form the shared edge
+// between hex a and its neighbour b.
+function getEdgeVertices(
+  a: Axial,
+  b: Axial,
+  size: number,
+): [{ x: number; y: number }, { x: number; y: number }] {
+  const center = hexToPixel(a.q, a.r, size)
+  const dq = b.q - a.q
+  const dr = b.r - a.r
+  const dirIdx = NEIGHBOR_DIRS.findIndex((d) => d.q === dq && d.r === dr)
+  const i = dirIdx === -1 ? 0 : dirIdx
+  const startAngle = -Math.PI / 6
+  return [
+    {
+      x: center.x + size * Math.cos(startAngle + (i * Math.PI) / 3),
+      y: center.y + size * Math.sin(startAngle + (i * Math.PI) / 3),
+    },
+    {
+      x: center.x + size * Math.cos(startAngle + ((i + 1) * Math.PI) / 3),
+      y: center.y + size * Math.sin(startAngle + ((i + 1) * Math.PI) / 3),
+    },
+  ]
+}
+
+// Given a world-space point, returns the nearest hex edge as two adjacent axial cells.
+function nearestEdge(worldX: number, worldY: number): { a: Axial; b: Axial } {
+  const frac = pixelToAxial(worldX, worldY, HEX_SIZE)
+  const a = roundAxial(frac)
+  let minDist = Infinity
+  let bestDir = NEIGHBOR_DIRS[0]
+  for (const d of NEIGHBOR_DIRS) {
+    const nb = { q: a.q + d.q, r: a.r + d.r }
+    const c = hexToPixel(nb.q, nb.r, HEX_SIZE)
+    const dist = (worldX - c.x) ** 2 + (worldY - c.y) ** 2
+    if (dist < minDist) {
+      minDist = dist
+      bestDir = d
+    }
+  }
+  return { a, b: { q: a.q + bestDir.q, r: a.r + bestDir.r } }
+}
+
 export function HexViewport({
   onZoomChange,
   selectedTerrainId,
@@ -227,10 +288,14 @@ export function HexViewport({
         }),
       ])
 
+      const riverLayer = new Graphics()
+      const riverEdges = new Set<string>()
+
       world.addChild(terrainLayer)
       world.addChild(iconLayer)
       world.addChild(locationLayer)
       world.addChild(grid)
+      world.addChild(riverLayer)
       world.addChild(hover)
 
       world.position.set(app.renderer.width / 2, app.renderer.height / 2)
@@ -310,6 +375,21 @@ export function HexViewport({
         }
 
         grid.stroke()
+
+        // Draw rivers over the grid lines
+        riverLayer.clear()
+        if (riverEdges.size > 0) {
+          riverLayer.setStrokeStyle({ width: 4, color: 0x2288ee, alpha: 0.92 })
+          for (const edgeKey of riverEdges) {
+            const [part1, part2] = edgeKey.split('|')
+            const [aq, ar] = part1.split(',').map(Number)
+            const [bq, br] = part2.split(',').map(Number)
+            const [v0, v1] = getEdgeVertices({ q: aq, r: ar }, { q: bq, r: br }, HEX_SIZE)
+            riverLayer.moveTo(v0.x, v0.y)
+            riverLayer.lineTo(v1.x, v1.y)
+          }
+          riverLayer.stroke()
+        }
       }
 
       const maybeRedrawGrid = () => {
@@ -346,14 +426,39 @@ export function HexViewport({
 
         const worldX = (local.x - world.position.x) / currentZoom
         const worldY = (local.y - world.position.y) / currentZoom
-        const fractional = pixelToAxial(worldX, worldY, HEX_SIZE)
-        const cell = roundAxial(fractional)
-        const center = hexToPixel(cell.q, cell.r, HEX_SIZE)
 
         hover.clear()
-        hover.setStrokeStyle({ width: 2.5, color: 0x77d5ff, alpha: 0.95 })
-        drawHexTile(hover, center.x, center.y, HEX_SIZE)
-        hover.stroke()
+
+        if (activeToolRef.current === 'river' || activeToolRef.current === 'erase-river') {
+          const { a, b } = nearestEdge(worldX, worldY)
+          const [v0, v1] = getEdgeVertices(a, b, HEX_SIZE)
+          hover.setStrokeStyle({ width: 5, color: 0x77d5ff, alpha: 0.9 })
+          hover.moveTo(v0.x, v0.y)
+          hover.lineTo(v1.x, v1.y)
+          hover.stroke()
+        } else {
+          const fractional = pixelToAxial(worldX, worldY, HEX_SIZE)
+          const cell = roundAxial(fractional)
+          const center = hexToPixel(cell.q, cell.r, HEX_SIZE)
+          hover.setStrokeStyle({ width: 2.5, color: 0x77d5ff, alpha: 0.95 })
+          drawHexTile(hover, center.x, center.y, HEX_SIZE)
+          hover.stroke()
+        }
+      }
+
+      const paintEdgeAtScreen = (screenX: number, screenY: number) => {
+        const local = screenToCanvas(screenX, screenY)
+        if (!local) return
+        const worldX = (local.x - world.position.x) / currentZoom
+        const worldY = (local.y - world.position.y) / currentZoom
+        const { a, b } = nearestEdge(worldX, worldY)
+        const edgeKey = makeEdgeKey(a, b)
+        if (activeToolRef.current === 'erase-river') {
+          riverEdges.delete(edgeKey)
+        } else {
+          riverEdges.add(edgeKey)
+        }
+        needsRedraw = true
       }
 
       const paintCellAtScreen = (screenX: number, screenY: number) => {
@@ -404,6 +509,10 @@ export function HexViewport({
             isPanning = true
             lastX = event.clientX
             lastY = event.clientY
+          } else if (activeToolRef.current === 'river' || activeToolRef.current === 'erase-river') {
+            isPaintingStroke = true
+            paintEdgeAtScreen(event.clientX, event.clientY)
+            highlightHoveredHex(event.clientX, event.clientY)
           } else {
             isPaintingStroke = true
             paintCellAtScreen(event.clientX, event.clientY)
@@ -423,7 +532,11 @@ export function HexViewport({
         highlightHoveredHex(event.clientX, event.clientY)
 
         if (isPaintingStroke && activeToolRef.current !== 'move') {
-          paintCellAtScreen(event.clientX, event.clientY)
+          if (activeToolRef.current === 'river' || activeToolRef.current === 'erase-river') {
+            paintEdgeAtScreen(event.clientX, event.clientY)
+          } else {
+            paintCellAtScreen(event.clientX, event.clientY)
+          }
         }
 
         if (isPanning) {

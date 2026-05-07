@@ -17,7 +17,7 @@ export type LocationDefinition = {
   iconPath: string
 }
 
-type ToolMode = 'move' | 'paint' | 'erase' | 'location' | 'erase-location'
+type ToolMode = 'move' | 'paint' | 'erase' | 'location' | 'erase-location' | 'river' | 'erase-river'
 
 const TERRAIN_TYPES: TerrainDefinition[] = [
   {
@@ -147,6 +147,29 @@ function App() {
             </button>
           )
         })}
+
+        <div className="palette-divider" />
+        <div className="palette-heading river-heading">Rivers</div>
+
+        <button
+          className={`terrain-button river${activeTool === 'river' ? ' active' : ''}`}
+          type="button"
+          onClick={() => setActiveTool('river')}
+          aria-pressed={activeTool === 'river'}
+        >
+          <span className="terrain-swatch river-swatch" />
+          <span>Draw</span>
+        </button>
+
+        <button
+          className={`terrain-button river-erase${activeTool === 'erase-river' ? ' active' : ''}`}
+          type="button"
+          onClick={() => setActiveTool('erase-river')}
+          aria-pressed={activeTool === 'erase-river'}
+        >
+          <span className="terrain-swatch erase-swatch" />
+          <span>Erase</span>
+        </button>
       </section>
 
       <section className="location-palette" aria-label="Location palette">
