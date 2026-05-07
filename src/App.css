@@ -117,3 +117,41 @@
       #6796c5 100%
     );
 }
+
+.location-palette {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1000;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 0.45rem;
+  padding: 0.55rem;
+  border-radius: 12px;
+  border: 1px solid #4d6d90;
+  background: rgba(5, 12, 20, 0.92);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(4px);
+  max-height: calc(100dvh - 6rem);
+  overflow-y: auto;
+}
+
+.palette-heading {
+  grid-column: 1 / -1;
+  color: #9ed0ff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.2rem 0.3rem;
+  border-bottom: 1px solid #2f445f;
+  margin-bottom: 0.1rem;
+}
+
+.location-swatch {
+  width: 24px;
+  height: 24px;
+  display: inline-block;
+  filter: invert(1);
+  opacity: 0.9;
+}

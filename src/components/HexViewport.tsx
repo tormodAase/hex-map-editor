@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
-import { Application, Container, Graphics } from 'pixi.js'
+import { Application, Assets, Container, Graphics, Sprite, Texture } from 'pixi.js'
+import type { LocationDefinition } from '../App'
 
 type TerrainDefinition = {
   id: string
@@ -7,13 +8,16 @@ type TerrainDefinition = {
   fillColor: number
   edgeColor: number
   cssColor: string
+  iconPath: string
 }
 
 type HexViewportProps = {
   onZoomChange?: (zoom: number) => void
   selectedTerrainId: string
   terrainDefinitions: TerrainDefinition[]
-  activeTool: 'move' | 'paint' | 'erase'
+  locationDefinitions: LocationDefinition[]
+  selectedLocationId: string
+  activeTool: 'move' | 'paint' | 'erase' | 'location' | 'erase-location'
 }
 
 const SQRT3 = Math.sqrt(3)
@@ -152,15 +156,22 @@ export function HexViewport({
   onZoomChange,
   selectedTerrainId,
   terrainDefinitions,
+  locationDefinitions,
+  selectedLocationId,
   activeTool,
 }: HexViewportProps) {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const selectedTerrainRef = useRef(selectedTerrainId)
+  const selectedLocationRef = useRef(selectedLocationId)
   const activeToolRef = useRef(activeTool)
 
   useEffect(() => {
     selectedTerrainRef.current = selectedTerrainId
   }, [selectedTerrainId])
+
+  useEffect(() => {
+    selectedLocationRef.current = selectedLocationId
+  }, [selectedLocationId])
 
   useEffect(() => {
     activeToolRef.current = activeTool
@@ -194,13 +205,31 @@ export function HexViewport({
       app.stage.addChild(world)
 
       const terrainLayer = new Graphics()
+      const iconLayer = new Container()
+      const locationLayer = new Container()
       const grid = new Graphics()
       const hover = new Graphics()
       grid.setStrokeStyle({ width: 1.5, color: 0x2f445f, alpha: 0.95 })
       const terrainById = new Map(terrainDefinitions.map((terrain) => [terrain.id, terrain]))
       const terrainTiles = new Map<string, string>()
+      const locationTiles = new Map<string, string>()
+      const terrainIconById = new Map<string, Texture>()
+      const locationIconById = new Map<string, Texture>()
+
+      await Promise.all([
+        ...terrainDefinitions.map(async (terrain) => {
+          const texture = (await Assets.load(terrain.iconPath)) as Texture
+          terrainIconById.set(terrain.id, texture)
+        }),
+        ...locationDefinitions.map(async (loc) => {
+          const texture = (await Assets.load(loc.iconPath)) as Texture
+          locationIconById.set(loc.id, texture)
+        }),
+      ])
 
       world.addChild(terrainLayer)
+      world.addChild(iconLayer)
+      world.addChild(locationLayer)
       world.addChild(grid)
       world.addChild(hover)
 
@@ -215,6 +244,8 @@ export function HexViewport({
 
       const redrawVisibleGrid = () => {
         terrainLayer.clear()
+        iconLayer.removeChildren().forEach((child) => child.destroy())
+        locationLayer.removeChildren().forEach((child) => child.destroy())
         grid.clear()
         grid.setStrokeStyle({ width: 1.5, color: 0x2f445f, alpha: 0.95 })
 
@@ -229,8 +260,9 @@ export function HexViewport({
         for (let r = bounds.minR; r <= bounds.maxR; r += 1) {
           for (let q = bounds.minQ; q <= bounds.maxQ; q += 1) {
             const center = hexToPixel(q, r, HEX_SIZE)
+            const key = makeCellKey(q, r)
 
-            const terrainId = terrainTiles.get(makeCellKey(q, r))
+            const terrainId = terrainTiles.get(key)
             if (terrainId) {
               const terrain = terrainById.get(terrainId)
               if (terrain) {
@@ -243,6 +275,33 @@ export function HexViewport({
                 drawHexTile(terrainLayer, center.x, center.y, HEX_SIZE)
                 terrainLayer.fill()
                 terrainLayer.stroke()
+
+                const iconTexture = terrainIconById.get(terrainId)
+                if (iconTexture && !locationTiles.has(key)) {
+                  const icon = new Sprite(iconTexture)
+                  icon.anchor.set(0.5)
+                  icon.position.set(Math.round(center.x), Math.round(center.y))
+                  icon.roundPixels = true
+                  icon.width = HEX_SIZE
+                  icon.height = HEX_SIZE
+                  icon.alpha = 0.95
+                  iconLayer.addChild(icon)
+                }
+              }
+            }
+
+            const locationId = locationTiles.get(key)
+            if (locationId) {
+              const locTexture = locationIconById.get(locationId)
+              if (locTexture) {
+                const loc = new Sprite(locTexture)
+                loc.anchor.set(0.5)
+                loc.position.set(Math.round(center.x), Math.round(center.y))
+                loc.roundPixels = true
+                // Location icon is slightly smaller so terrain icon is still visible underneath
+                loc.width = HEX_SIZE * 0.72
+                loc.height = HEX_SIZE * 0.72
+                locationLayer.addChild(loc)
               }
             }
 
@@ -311,6 +370,12 @@ export function HexViewport({
 
         if (activeToolRef.current === 'erase') {
           terrainTiles.delete(key)
+          locationTiles.delete(key)
+        } else if (activeToolRef.current === 'erase-location') {
+          locationTiles.delete(key)
+        } else if (activeToolRef.current === 'location') {
+          if (!terrainTiles.has(key)) return
+          locationTiles.set(key, selectedLocationRef.current)
         } else {
           terrainTiles.set(key, selectedTerrainRef.current)
         }
@@ -466,7 +531,7 @@ export function HexViewport({
         teardown()
       }
     }
-  }, [onZoomChange, terrainDefinitions])
+  }, [onZoomChange, terrainDefinitions, locationDefinitions])
 
   return <div className="viewport" ref={hostRef} />
 }
