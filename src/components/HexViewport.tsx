@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { Application, Assets, Container, Graphics, Sprite, Texture } from 'pixi.js'
 import type { LocationDefinition } from '../App'
 
@@ -26,9 +26,13 @@ type HexViewportProps = {
   setRiverEdges: (edges: Set<string>) => void
 }
 
+export type HexViewportHandle = {
+  downloadPng: () => void
+}
+
 const SQRT3 = Math.sqrt(3)
 const HEX_SIZE = 36
-const MIN_ZOOM = 0.05
+const MIN_ZOOM = 0.25
 const MAX_ZOOM = 3
 const ZOOM_SENSITIVITY = 0.005
 
@@ -219,7 +223,7 @@ function nearestEdge(worldX: number, worldY: number): { a: Axial; b: Axial } {
   return { a, b: { q: a.q + bestDir.q, r: a.r + bestDir.r } }
 }
 
-export function HexViewport({
+export const HexViewport = forwardRef<HexViewportHandle, HexViewportProps>(function HexViewport({
   onZoomChange,
   selectedTerrainId,
   terrainDefinitions,
@@ -232,15 +236,51 @@ export function HexViewport({
   setLocationTiles,
   riverEdges,
   setRiverEdges,
-}: HexViewportProps) {
+}: HexViewportProps, ref) {
   const hostRef = useRef<HTMLDivElement | null>(null)
+  const appRef = useRef<Application | null>(null)
   const selectedTerrainRef = useRef(selectedTerrainId)
   const selectedLocationRef = useRef(selectedLocationId)
   const activeToolRef = useRef(activeTool)
+  const hoverLayerRef = useRef<Graphics | null>(null)
   const localTerrainTilesRef = useRef<Map<string, string>>(new Map(terrainTiles))
   const localLocationTilesRef = useRef<Map<string, string>>(new Map(locationTiles))
   const localRiverEdgesRef = useRef<Set<string>>(new Set(riverEdges))
   const needsRedrawRef = useRef(true)
+
+  useImperativeHandle(ref, () => ({
+    downloadPng: () => {
+      const app = appRef.current
+      if (!app) {
+        return
+      }
+
+      const hoverLayer = hoverLayerRef.current
+      const hadHoverVisible = hoverLayer?.visible ?? false
+      if (hoverLayer) {
+        hoverLayer.visible = false
+      }
+
+      app.render()
+      app.canvas.toBlob((blob) => {
+        if (hoverLayer) {
+          hoverLayer.visible = hadHoverVisible
+        }
+
+        if (!blob) {
+          return
+        }
+
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+        a.href = url
+        a.download = `hex-viewport-${timestamp}.png`
+        a.click()
+        URL.revokeObjectURL(url)
+      }, 'image/png')
+    },
+  }), [])
 
   useEffect(() => {
     selectedTerrainRef.current = selectedTerrainId
@@ -286,6 +326,7 @@ export function HexViewport({
         resolution: window.devicePixelRatio || 1,
         background: '#10171f',
       })
+      appRef.current = app
 
       if (destroyed || !hostRef.current) {
         app.destroy(true)
@@ -302,6 +343,7 @@ export function HexViewport({
       const locationLayer = new Container()
       const grid = new Graphics()
       const hover = new Graphics()
+      hoverLayerRef.current = hover
       grid.setStrokeStyle({ width: 1.5, color: 0x2f445f, alpha: 0.95 })
       const terrainById = new Map(terrainDefinitions.map((terrain) => [terrain.id, terrain]))
       const terrainIconById = new Map<string, Texture>()
@@ -660,6 +702,8 @@ export function HexViewport({
         window.removeEventListener('resize', onResize)
         app.ticker.remove(maybeRedrawGrid)
         app.destroy(true)
+        appRef.current = null
+        hoverLayerRef.current = null
       }
     }
 
@@ -678,4 +722,4 @@ export function HexViewport({
   }, [onZoomChange, terrainDefinitions, locationDefinitions])
 
   return <div className="viewport" ref={hostRef} />
-}
+})

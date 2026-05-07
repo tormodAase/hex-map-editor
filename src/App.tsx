@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { HexViewport } from './components/HexViewport'
+import { useState, useEffect, useRef } from 'react'
+import { HexViewport, type HexViewportHandle } from './components/HexViewport'
 import { loadMapFromStorage, saveMapToStorage, exportMapToFile, importMapFromFile, serializeMap } from './utils/mapStorage'
 import './App.css'
 
@@ -89,6 +89,7 @@ const LOCATION_TYPES: LocationDefinition[] = [
 ]
 
 function App() {
+  const viewportRef = useRef<HexViewportHandle | null>(null)
   const [zoom, setZoom] = useState(1)
   const [selectedTerrainId, setSelectedTerrainId] = useState(TERRAIN_TYPES[0].id)
   const [selectedLocationId, setSelectedLocationId] = useState(LOCATION_TYPES[0].id)
@@ -142,9 +143,14 @@ function App() {
     }
   }
 
+  const handlePrintPng = () => {
+    viewportRef.current?.downloadPng()
+  }
+
   return (
     <main className="app-shell">
       <HexViewport
+        ref={viewportRef}
         onZoomChange={setZoom}
         selectedTerrainId={selectedTerrainId}
         terrainDefinitions={TERRAIN_TYPES}
@@ -266,15 +272,23 @@ function App() {
 
       <section className="file-controls" aria-label="File controls">
         <button
+          className="print-button"
+          type="button"
+          onClick={handlePrintPng}
+          title="Download current viewport as PNG"
+        >
+          Print PNG
+        </button>
+        <button
           className="export-button"
           type="button"
           onClick={handleExport}
           title="Download map as JSON"
         >
-          ↓ Export
+          ↑ Export
         </button>
         <label className="import-button" title="Load map from JSON file">
-          ↑ Import
+          ↓ Import
           <input
             type="file"
             accept=".json"

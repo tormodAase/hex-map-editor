@@ -192,6 +192,7 @@
   backdrop-filter: blur(4px);
 }
 
+.print-button,
 .export-button,
 .import-button {
   padding: 0.5rem 0.75rem;
@@ -210,6 +211,7 @@
   justify-content: center;
 }
 
+.print-button:hover,
 .export-button:hover,
 .import-button:hover {
   background: rgba(30, 70, 110, 0.9);
@@ -217,6 +219,7 @@
   box-shadow: 0 0 8px rgba(158, 208, 255, 0.3);
 }
 
+.print-button:active,
 .export-button:active,
 .import-button:active {
   background: rgba(40, 80, 130, 0.95);
